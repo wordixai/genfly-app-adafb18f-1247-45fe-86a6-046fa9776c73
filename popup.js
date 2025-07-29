@@ -2,6 +2,7 @@ class TradeMeAnalyzer {
   constructor() {
     this.analysisData = null;
     this.isAnalyzing = false;
+    this.messageListener = null;
     this.init();
   }
 
@@ -60,464 +61,645 @@ class TradeMeAnalyzer {
       // Get current tab
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       
+      if (!tab) {
+        throw new Error('No active tab found');
+      }
+
+      if (!tab.url || !tab.url.includes('trademe.co.nz')) {
+        throw new Error('Please navigate to TradeMe.co.nz first');
+      }
+
       // Get user preferences
       const category = document.getElementById('category-select').value;
       const maxItems = parseInt(document.getElementById('max-items').value);
 
-      console.log('Starting analysis with params:', { category, maxItems });
+      console.log('Starting analysis with params:', { 
+        categorySelect: category, 
+        maxItems, 
+        tabUrl: tab.url,
+        tabId: tab.id 
+      });
 
-      // Set up message listener first
-      const messageListener = (message, sender, sendResponse) => {
-        console.log('Received message:', message);
+      // Clean up any existing message listener
+      if (this.messageListener) {
+        chrome.runtime.onMessage.removeListener(this.messageListener);
+      }
+
+      // Set up message listener
+      this.messageListener = (message, sender, sendResponse) => {
+        console.log('Popup received message:', message);
         
-        if (message.action === 'progress') {
-          progressFill.style.width = `${message.percentage}%`;
-          progressText.textContent = message.message;
-        } else if (message.action === 'complete') {
-          this.analysisData = message.data;
-          this.displayResults();
-          this.cleanupAnalysis();
-          chrome.runtime.onMessage.removeListener(messageListener);
-        } else if (message.action === 'error') {
-          console.error('Analysis error from content script:', message.error);
-          this.handleError(message.error);
-          chrome.runtime.onMessage.removeListener(messageListener);
+        try {
+          if (message.action === 'progress') {
+            progressFill.style.width = `${message.percentage}%`;
+            progressText.textContent = message.message;
+          } else if (message.action === 'complete') {
+            this.analysisData = message.data;
+            this.displayResults();
+            this.cleanupAnalysis();
+            chrome.runtime.onMessage.removeListener(this.messageListener);
+            this.messageListener = null;
+          } else if (message.action === 'error') {
+            console.error('Analysis error from content script:', message.error, message.details);
+            this.handleError(message.error, message.details);
+            chrome.runtime.onMessage.removeListener(this.messageListener);
+            this.messageListener = null;
+          }
+        } catch (handlerError) {
+          console.error('Error in message handler:', handlerError);
         }
       };
 
-      chrome.runtime.onMessage.addListener(messageListener);
+      chrome.runtime.onMessage.addListener(this.messageListener);
+
+      // Test if we can inject scripts
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            console.log('Test injection successful');
+            return 'test-success';
+          }
+        });
+      } catch (testError) {
+        throw new Error(`Cannot inject scripts into this page: ${testError.message}. Make sure you're on a regular TradeMe page.`);
+      }
 
       // Inject and execute the analyzer
+      console.log('Injecting analyzer script...');
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: this.injectAnalyzer,
         args: [category, maxItems]
       });
 
+      console.log('Analyzer script injected successfully');
+
+      // Set a timeout to catch hanging analysis
+      setTimeout(() => {
+        if (this.isAnalyzing) {
+          this.handleError('Analysis timeout - please try again');
+        }
+      }, 30000); // 30 second timeout
+
     } catch (error) {
-      console.error('Analysis error:', error);
-      this.handleError(`Failed to analyze: ${error.message}`);
+      console.error('Analysis setup error:', error);
+      this.handleError(`Setup failed: ${error.message}`);
     }
   }
 
   // This function gets injected into the TradeMe page
   injectAnalyzer(category, maxItems) {
-    console.log('TradeMe analyzer injected with params:', { category, maxItems });
-    
-    const analyzer = {
-      async analyze() {
-        try {
-          console.log('Starting TradeMe analysis...');
-          
-          // Send initial progress
-          this.sendMessage({ 
-            action: 'progress', 
-            percentage: 10, 
-            message: 'Scanning page structure...' 
-          });
-
-          // Wait a bit for the page to be ready
-          await this.waitForContent();
-
-          const items = await this.extractItems(category, maxItems);
-          console.log('Extracted items:', items);
-          
-          if (items.length === 0) {
-            throw new Error('No items found. Make sure you\'re on a TradeMe search results or category page.');
-          }
-          
-          this.sendMessage({ 
-            action: 'progress', 
-            percentage: 80, 
-            message: 'Processing item data...' 
-          });
-
-          const analysisData = this.processItems(items);
-          
-          this.sendMessage({ 
-            action: 'progress', 
-            percentage: 100, 
-            message: 'Analysis complete!' 
-          });
-
-          setTimeout(() => {
-            this.sendMessage({ 
-              action: 'complete', 
-              data: analysisData 
-            });
-          }, 500);
-
-        } catch (error) {
-          console.error('Analysis error:', error);
-          this.sendMessage({ 
-            action: 'error', 
-            error: error.message 
-          });
-        }
-      },
-
-      sendMessage(message) {
-        try {
-          chrome.runtime.sendMessage(message);
-        } catch (error) {
-          console.error('Failed to send message:', error);
-        }
-      },
-
-      async waitForContent() {
-        // Wait for page content to load
-        let attempts = 0;
-        while (attempts < 10) {
-          if (document.readyState === 'complete' && document.body) {
-            break;
-          }
-          await new Promise(resolve => setTimeout(resolve, 500));
-          attempts++;
-        }
-      },
-
-      async extractItems(category, maxItems) {
-        const items = [];
-        
-        this.sendMessage({ 
-          action: 'progress', 
-          percentage: 20, 
-          message: 'Searching for items...' 
-        });
-
-        // Multiple selector strategies for TradeMe
-        const selectorStrategies = [
-          // Strategy 1: Modern TradeMe selectors
-          () => document.querySelectorAll('[data-testid="listing-card"], [data-testid="listing"]'),
-          
-          // Strategy 2: Card-based selectors
-          () => document.querySelectorAll('.o-card, .tm-card, .listing-card'),
-          
-          // Strategy 3: Listing item selectors
-          () => document.querySelectorAll('.listing-item, .tm-listing, .search-result'),
-          
-          // Strategy 4: Article elements with listing data
-          () => document.querySelectorAll('article[data-listing-id], article[id*="listing"]'),
-          
-          // Strategy 5: General card/item patterns
-          () => document.querySelectorAll('[class*="listing"], [class*="item"], [class*="card"]').length > 0 ? 
-               Array.from(document.querySelectorAll('[class*="listing"], [class*="item"], [class*="card"]'))
-               .filter(el => this.looksLikeListing(el)) : [],
-          
-          // Strategy 6: Fallback - any element that looks like a listing
-          () => Array.from(document.querySelectorAll('*'))
-               .filter(el => this.looksLikeListing(el))
-               .slice(0, 50)
-        ];
-
-        let listingElements = [];
-        
-        for (let i = 0; i < selectorStrategies.length; i++) {
+    // Wrap everything in a try-catch to handle any injection errors
+    try {
+      console.log('TradeMe analyzer injected with params:', { category, maxItems });
+      
+      const analyzer = {
+        async analyze() {
           try {
-            listingElements = Array.from(selectorStrategies[i]());
-            console.log(`Strategy ${i + 1} found ${listingElements.length} elements`);
+            console.log('Starting TradeMe analysis...');
             
-            if (listingElements.length > 0) {
-              // Filter to ensure we have valid listings
-              listingElements = listingElements.filter(el => this.isValidListing(el));
-              if (listingElements.length > 0) {
-                console.log(`Strategy ${i + 1} found ${listingElements.length} valid listings`);
-                break;
+            // Verify we can send messages
+            try {
+              this.sendMessage({ 
+                action: 'progress', 
+                percentage: 5, 
+                message: 'Initializing...' 
+              });
+            } catch (msgError) {
+              console.error('Cannot send messages:', msgError);
+              throw new Error('Extension communication failed');
+            }
+
+            // Wait for page to be ready
+            await this.waitForContent();
+
+            this.sendMessage({ 
+              action: 'progress', 
+              percentage: 15, 
+              message: 'Page ready, scanning for items...' 
+            });
+
+            // Analyze page structure first
+            const pageInfo = this.analyzePageStructure();
+            console.log('Page analysis:', pageInfo);
+
+            const items = await this.extractItems(category, maxItems);
+            console.log('Extracted items:', items);
+            
+            if (items.length === 0) {
+              throw new Error(`No items found on this page. Page type: ${pageInfo.pageType}. Try navigating to a TradeMe search results or category page.`);
+            }
+            
+            this.sendMessage({ 
+              action: 'progress', 
+              percentage: 80, 
+              message: `Processing ${items.length} items...` 
+            });
+
+            const analysisData = this.processItems(items);
+            
+            this.sendMessage({ 
+              action: 'progress', 
+              percentage: 100, 
+              message: 'Analysis complete!' 
+            });
+
+            setTimeout(() => {
+              this.sendMessage({ 
+                action: 'complete', 
+                data: analysisData 
+              });
+            }, 500);
+
+          } catch (error) {
+            console.error('Analysis error:', error);
+            this.sendMessage({ 
+              action: 'error', 
+              error: error.message,
+              details: {
+                stack: error.stack,
+                url: window.location.href,
+                userAgent: navigator.userAgent
               }
+            });
+          }
+        },
+
+        sendMessage(message) {
+          try {
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+              chrome.runtime.sendMessage(message);
+            } else {
+              console.error('Chrome runtime not available');
+              throw new Error('Extension context lost');
             }
           } catch (error) {
-            console.warn(`Strategy ${i + 1} failed:`, error);
+            console.error('Failed to send message:', error, message);
+            throw error;
           }
-        }
+        },
 
-        console.log('Final listing elements found:', listingElements.length);
+        async waitForContent() {
+          let attempts = 0;
+          const maxAttempts = 20;
+          
+          while (attempts < maxAttempts) {
+            if (document.readyState === 'complete' && 
+                document.body && 
+                document.body.children.length > 0) {
+              console.log('Page content ready');
+              return;
+            }
+            
+            console.log(`Waiting for content... attempt ${attempts + 1}`);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            attempts++;
+          }
+          
+          console.warn('Page content may not be fully loaded');
+        },
 
-        if (listingElements.length === 0) {
-          // Last resort: try to find any elements with price and title
-          listingElements = this.findListingsByContent();
-        }
+        analyzePageStructure() {
+          const info = {
+            url: window.location.href,
+            title: document.title,
+            domain: window.location.hostname,
+            pathname: window.location.pathname,
+            bodyChildren: document.body ? document.body.children.length : 0,
+            totalElements: document.querySelectorAll('*').length,
+            hasTradeMe: window.location.href.includes('trademe.co.nz'),
+            pageType: 'unknown'
+          };
 
-        // Extract data from found elements
-        for (let i = 0; i < Math.min(listingElements.length, maxItems); i++) {
-          const element = listingElements[i];
+          // Detect page type
+          const url = window.location.href.toLowerCase();
+          const title = document.title.toLowerCase();
+
+          if (url.includes('/search') || title.includes('search')) {
+            info.pageType = 'search';
+          } else if (url.includes('/browse') || title.includes('browse') || url.includes('/marketplace')) {
+            info.pageType = 'category';
+          } else if (url.includes('/listing') || url.includes('/view/')) {
+            info.pageType = 'individual_listing';
+          }
+
+          return info;
+        },
+
+        async extractItems(category, maxItems) {
+          const items = [];
           
           this.sendMessage({ 
             action: 'progress', 
-            percentage: 20 + ((i / Math.min(listingElements.length, maxItems)) * 50), 
-            message: `Extracting item ${i + 1} of ${Math.min(listingElements.length, maxItems)}...` 
+            percentage: 25, 
+            message: 'Searching for listings...' 
           });
 
-          const item = this.extractItemData(element, i + 1);
-          if (item && item.title && (item.price > 0 || item.priceText)) {
-            items.push(item);
-            console.log('Extracted item:', item);
+          // Try different strategies to find listings
+          const strategies = [
+            () => this.findByTestId(),
+            () => this.findByClass(),
+            () => this.findByStructure(),
+            () => this.findByContent()
+          ];
+
+          let listingElements = [];
+          let usedStrategy = 'none';
+
+          for (let i = 0; i < strategies.length; i++) {
+            try {
+              const strategyName = ['testid', 'class', 'structure', 'content'][i];
+              console.log(`Trying strategy ${i + 1}: ${strategyName}`);
+              
+              const elements = strategies[i]();
+              console.log(`Strategy ${strategyName} found ${elements.length} elements`);
+              
+              if (elements.length > 0) {
+                listingElements = elements.slice(0, maxItems);
+                usedStrategy = strategyName;
+                console.log(`Using strategy: ${strategyName} with ${listingElements.length} elements`);
+                break;
+              }
+            } catch (strategyError) {
+              console.warn(`Strategy ${i + 1} failed:`, strategyError);
+            }
           }
-        }
 
-        return items;
-      },
+          if (listingElements.length === 0) {
+            console.log('No elements found with any strategy. Page structure:');
+            this.debugPageStructure();
+            throw new Error('No listing elements found. This may not be a TradeMe results page.');
+          }
 
-      looksLikeListing(element) {
-        if (!element || element.offsetHeight < 50 || element.offsetWidth < 100) {
-          return false;
-        }
-        
-        const text = element.textContent || '';
-        const hasPrice = /\$[\d,]+/.test(text) || text.includes('Reserve') || text.includes('Buy Now');
-        const hasLinkOrTitle = element.querySelector('a[href*="listing"], a[href*="/"]') || 
-                              element.querySelector('h1, h2, h3, h4, h5, h6');
-        
-        return hasPrice && hasLinkOrTitle;
-      },
+          // Extract data from elements
+          for (let i = 0; i < listingElements.length; i++) {
+            const element = listingElements[i];
+            
+            if (i % 5 === 0) {
+              this.sendMessage({ 
+                action: 'progress', 
+                percentage: 25 + ((i / listingElements.length) * 50), 
+                message: `Processing item ${i + 1} of ${listingElements.length}...` 
+              });
+            }
 
-      isValidListing(element) {
-        try {
-          const text = element.textContent || '';
-          const hasPrice = /\$[\d,]+/.test(text);
-          const hasTitle = element.querySelector('a, h1, h2, h3, h4, h5, h6');
-          const isVisible = element.offsetHeight > 0;
+            try {
+              const item = this.extractItemData(element, i + 1);
+              if (item && item.title && item.title.length > 3) {
+                items.push(item);
+              }
+            } catch (extractError) {
+              console.warn('Failed to extract item data:', extractError);
+            }
+          }
+
+          console.log(`Extracted ${items.length} valid items using ${usedStrategy} strategy`);
+          return items;
+        },
+
+        findByTestId() {
+          const selectors = [
+            '[data-testid="listing-card"]',
+            '[data-testid="listing"]',
+            '[data-testid*="listing"]',
+            '[data-testid*="card"]'
+          ];
+
+          for (const selector of selectors) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+              return Array.from(elements);
+            }
+          }
+          return [];
+        },
+
+        findByClass() {
+          const selectors = [
+            '.o-card',
+            '.tm-card', 
+            '.listing-card',
+            '.listing-item',
+            '.tm-listing',
+            '.search-result',
+            '.marketplace-listing'
+          ];
+
+          for (const selector of selectors) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+              return Array.from(elements);
+            }
+          }
+          return [];
+        },
+
+        findByStructure() {
+          const selectors = [
+            'article[data-listing-id]',
+            'article[id*="listing"]',
+            'article',
+            '.card',
+            '.item',
+            '[class*="listing"]',
+            '[class*="item"]',
+            '[class*="card"]'
+          ];
+
+          for (const selector of selectors) {
+            const elements = Array.from(document.querySelectorAll(selector))
+              .filter(el => this.isValidListing(el));
+            
+            if (elements.length > 0) {
+              return elements.slice(0, 50);
+            }
+          }
+          return [];
+        },
+
+        findByContent() {
+          // Find elements that contain both price and title patterns
+          const allElements = Array.from(document.querySelectorAll('*'))
+            .filter(el => el.offsetHeight > 80 && el.offsetWidth > 150)
+            .filter(el => {
+              const text = el.textContent || '';
+              const hasPrice = /\$[\d,]+|\bReserve\b|\bBuy Now\b/i.test(text);
+              const hasLink = el.querySelector('a[href]');
+              return hasPrice && hasLink;
+            });
+
+          return allElements.slice(0, 30);
+        },
+
+        isValidListing(element) {
+          try {
+            if (!element || element.offsetHeight < 50 || element.offsetWidth < 100) {
+              return false;
+            }
+            
+            const text = element.textContent || '';
+            const hasPrice = /\$[\d,]+|\bReserve\b|\bBuy Now\b/i.test(text);
+            const hasTitle = element.querySelector('a, h1, h2, h3, h4, h5, h6');
+            
+            return hasPrice && hasTitle && text.length > 20;
+          } catch {
+            return false;
+          }
+        },
+
+        debugPageStructure() {
+          console.log('=== PAGE STRUCTURE DEBUG ===');
+          console.log('URL:', window.location.href);
+          console.log('Title:', document.title);
+          console.log('Body children:', document.body?.children.length || 0);
           
-          return hasPrice && hasTitle && isVisible;
-        } catch {
-          return false;
-        }
-      },
+          // Log common selectors and their counts
+          const commonSelectors = [
+            'article', '.card', '.item', '[class*="listing"]', 
+            '[data-testid*="listing"]', 'a[href*="listing"]'
+          ];
+          
+          commonSelectors.forEach(selector => {
+            try {
+              const count = document.querySelectorAll(selector).length;
+              console.log(`${selector}: ${count} elements`);
+            } catch (e) {
+              console.log(`${selector}: error`);
+            }
+          });
+          
+          // Log elements with price patterns
+          const priceElements = Array.from(document.querySelectorAll('*'))
+            .filter(el => /\$[\d,]+/.test(el.textContent || ''));
+          console.log('Elements with prices:', priceElements.length);
+        },
 
-      findListingsByContent() {
-        const allElements = Array.from(document.querySelectorAll('*'));
-        return allElements
-          .filter(el => {
-            if (el.offsetHeight < 80 || el.offsetWidth < 200) return false;
-            
-            const text = el.textContent || '';
-            const hasPrice = /\$[\d,]+/.test(text);
-            const hasTitle = el.querySelector('a[href], h1, h2, h3, h4, h5, h6');
-            
-            return hasPrice && hasTitle;
-          })
-          .slice(0, 50);
-      },
+        extractItemData(element, index) {
+          try {
+            return {
+              rank: index,
+              title: this.extractTitle(element),
+              price: this.extractPrice(element),
+              priceText: this.extractPriceText(element),
+              link: this.extractLink(element),
+              image: this.extractImage(element),
+              location: this.extractLocation(element),
+              seller: this.extractSeller(element),
+              type: this.extractType(element),
+              extractedAt: new Date().toISOString(),
+              elementInfo: {
+                tagName: element.tagName,
+                className: element.className,
+                id: element.id || '',
+                textLength: (element.textContent || '').length
+              }
+            };
+          } catch (error) {
+            console.warn('Error extracting item data:', error);
+            return null;
+          }
+        },
 
-      extractItemData(element, index) {
-        try {
-          const item = {
-            rank: index,
-            title: this.extractTitle(element),
-            price: this.extractPrice(element),
-            priceText: this.extractPriceText(element),
-            link: this.extractLink(element),
-            image: this.extractImage(element),
-            location: this.extractLocation(element),
-            seller: this.extractSeller(element),
-            type: this.extractType(element),
-            extractedAt: new Date().toISOString(),
-            element: element.tagName + (element.className ? '.' + element.className.split(' ').join('.') : '')
+        extractTitle(element) {
+          const strategies = [
+            // Links first
+            () => {
+              const link = element.querySelector('a[href*="listing"], a[href*="/"]');
+              return link ? (link.textContent || link.title || '').trim() : '';
+            },
+            // Headers
+            () => {
+              const header = element.querySelector('h1, h2, h3, h4, h5, h6');
+              return header ? header.textContent.trim() : '';
+            },
+            // Data attributes
+            () => {
+              const titleEl = element.querySelector('[data-testid*="title"], [data-testid*="name"]');
+              return titleEl ? titleEl.textContent.trim() : '';
+            },
+            // Class names
+            () => {
+              const titleEl = element.querySelector('.title, .name, .heading, .listing-title');
+              return titleEl ? titleEl.textContent.trim() : '';
+            }
+          ];
+
+          for (const strategy of strategies) {
+            try {
+              const title = strategy();
+              if (title && title.length > 3 && title.length < 200) {
+                return title;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+
+          // Fallback: get the longest meaningful text
+          const texts = Array.from(element.querySelectorAll('*'))
+            .map(el => el.textContent?.trim())
+            .filter(text => text && text.length > 5 && text.length < 150 && !text.includes('$'))
+            .sort((a, b) => b.length - a.length);
+
+          return texts[0] || 'Unknown Item';
+        },
+
+        extractPrice(element) {
+          const text = element.textContent || '';
+          const pricePatterns = [
+            /\$\s?([\d,]+(?:\.\d{2})?)/g,
+            /Reserve:\s?\$\s?([\d,]+(?:\.\d{2})?)/i,
+            /Buy Now:\s?\$\s?([\d,]+(?:\.\d{2})?)/i
+          ];
+
+          for (const pattern of pricePatterns) {
+            const matches = Array.from(text.matchAll(pattern));
+            for (const match of matches) {
+              const price = parseFloat(match[1].replace(/,/g, ''));
+              if (price > 0 && price < 10000000) {
+                return price;
+              }
+            }
+          }
+          return 0;
+        },
+
+        extractPriceText(element) {
+          const text = element.textContent || '';
+          const match = text.match(/\$[\d,]+(?:\.\d{2})?|Reserve|Buy Now|Auction/i);
+          return match ? match[0] : '';
+        },
+
+        extractLink(element) {
+          const link = element.querySelector('a[href]');
+          if (link && link.href) {
+            return link.href.startsWith('http') ? link.href : 
+                   'https://www.trademe.co.nz' + link.getAttribute('href');
+          }
+          return '';
+        },
+
+        extractImage(element) {
+          const img = element.querySelector('img');
+          return img?.src || '';
+        },
+
+        extractLocation(element) {
+          const text = element.textContent || '';
+          const nzLocations = [
+            'Auckland', 'Wellington', 'Christchurch', 'Hamilton', 'Tauranga',
+            'Dunedin', 'Palmerston North', 'Rotorua', 'Nelson', 'New Plymouth'
+          ];
+
+          for (const location of nzLocations) {
+            if (text.includes(location)) {
+              return location;
+            }
+          }
+          return '';
+        },
+
+        extractSeller(element) {
+          const sellerEl = element.querySelector('[data-testid*="seller"], .seller, .member');
+          return sellerEl ? sellerEl.textContent?.trim() || '' : '';
+        },
+
+        extractType(element) {
+          const text = element.textContent?.toLowerCase() || '';
+          if (text.includes('auction')) return 'Auction';
+          if (text.includes('buy now')) return 'Buy Now';
+          if (text.includes('reserve')) return 'Reserve';
+          return 'Listing';
+        },
+
+        processItems(items) {
+          const validItems = items.filter(item => 
+            item && item.title && item.title !== 'Unknown Item'
+          );
+          
+          // Sort by price (highest first), then by title
+          validItems.sort((a, b) => {
+            if (a.price && b.price) return b.price - a.price;
+            if (a.price && !b.price) return -1;
+            if (!a.price && b.price) return 1;
+            return a.title.localeCompare(b.title);
+          });
+          
+          const itemsWithPrices = validItems.filter(item => item.price > 0);
+          const totalRevenue = itemsWithPrices.reduce((sum, item) => sum + item.price, 0);
+          const avgPrice = itemsWithPrices.length > 0 ? totalRevenue / itemsWithPrices.length : 0;
+          
+          return {
+            items: validItems,
+            summary: {
+              totalItems: validItems.length,
+              itemsWithPrices: itemsWithPrices.length,
+              totalRevenue,
+              averagePrice: avgPrice,
+              priceRanges: this.groupByPriceRanges(itemsWithPrices),
+              typeDistribution: this.getTypeDistribution(validItems),
+              topItems: validItems.slice(0, 10)
+            }
+          };
+        },
+
+        groupByPriceRanges(items) {
+          const ranges = {
+            'Under $50': 0,
+            '$50 - $200': 0,
+            '$200 - $500': 0,
+            '$500 - $1,000': 0,
+            'Over $1,000': 0
           };
 
-          console.log('Extracted item data:', item);
-          return item;
-        } catch (error) {
-          console.warn('Error extracting item data:', error);
-          return null;
+          items.forEach(item => {
+            if (item.price < 50) ranges['Under $50']++;
+            else if (item.price < 200) ranges['$50 - $200']++;
+            else if (item.price < 500) ranges['$200 - $500']++;
+            else if (item.price < 1000) ranges['$500 - $1,000']++;
+            else ranges['Over $1,000']++;
+          });
+
+          return ranges;
+        },
+
+        getTypeDistribution(items) {
+          const types = {};
+          items.forEach(item => {
+            types[item.type] = (types[item.type] || 0) + 1;
+          });
+          return types;
         }
-      },
+      };
 
-      extractTitle(element) {
-        const titleSelectors = [
-          'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-          '[data-testid*="title"]', '[data-testid*="name"]',
-          '.listing-title', '.tm-listing-title', '.o-card__heading',
-          'a[href*="listing"]', 'a[title]',
-          '.title', '.name', '.heading'
-        ];
-        
-        for (const selector of titleSelectors) {
-          const titleEl = element.querySelector(selector);
-          if (titleEl) {
-            const title = (titleEl.textContent || titleEl.title || titleEl.alt || '').trim();
-            if (title && title.length > 3 && title.length < 200) {
-              return title;
-            }
-          }
+      // Start analysis immediately
+      analyzer.analyze().catch(error => {
+        console.error('Analyzer execution error:', error);
+        try {
+          chrome.runtime.sendMessage({ 
+            action: 'error', 
+            error: `Analysis execution failed: ${error.message}`,
+            details: { stack: error.stack }
+          });
+        } catch (msgError) {
+          console.error('Could not send error message:', msgError);
         }
+      });
 
-        // Fallback: look for longest meaningful text
-        const textNodes = Array.from(element.querySelectorAll('*'))
-          .map(el => el.textContent?.trim())
-          .filter(text => text && text.length > 10 && text.length < 200 && !text.includes('$'))
-          .sort((a, b) => b.length - a.length);
-
-        return textNodes[0] || 'Unknown Item';
-      },
-
-      extractPrice(element) {
-        const text = element.textContent || '';
-        
-        // Look for price patterns
-        const pricePatterns = [
-          /\$\s?([\d,]+(?:\.\d{2})?)/g,
-          /Reserve:\s?\$\s?([\d,]+(?:\.\d{2})?)/g,
-          /Buy Now:\s?\$\s?([\d,]+(?:\.\d{2})?)/g,
-          /([\d,]+(?:\.\d{2})?)\s?dollars?/gi
-        ];
-
-        for (const pattern of pricePatterns) {
-          const matches = Array.from(text.matchAll(pattern));
-          for (const match of matches) {
-            const price = parseFloat(match[1].replace(/,/g, ''));
-            if (price > 0 && price < 1000000) { // Reasonable price range
-              return price;
-            }
-          }
-        }
-
-        return 0;
-      },
-
-      extractPriceText(element) {
-        const text = element.textContent || '';
-        const priceMatch = text.match(/\$[\d,]+(?:\.\d{2})?|\$?[\d,]+\s?dollars?|Reserve|Buy Now|Auction/i);
-        return priceMatch ? priceMatch[0] : '';
-      },
-
-      extractLink(element) {
-        const link = element.querySelector('a[href*="listing"], a[href*="/"]');
-        if (link) {
-          const href = link.href;
-          return href.startsWith('http') ? href : 'https://www.trademe.co.nz' + href;
-        }
-        return '';
-      },
-
-      extractImage(element) {
-        const img = element.querySelector('img');
-        return img?.src || '';
-      },
-
-      extractLocation(element) {
-        const text = element.textContent || '';
-        const nzLocations = [
-          'Auckland', 'Wellington', 'Christchurch', 'Hamilton', 'Tauranga',
-          'Dunedin', 'Palmerston North', 'Rotorua', 'Nelson', 'New Plymouth',
-          'Invercargill', 'Whangarei', 'Gisborne', 'Timaru', 'Hastings',
-          'Napier', 'Blenheim', 'Masterton', 'Taupo'
-        ];
-
-        for (const location of nzLocations) {
-          if (text.includes(location)) {
-            return location;
-          }
-        }
-        
-        return '';
-      },
-
-      extractSeller(element) {
-        const sellerSelectors = [
-          '[data-testid*="seller"]', '.seller', '.member',
-          '.tm-seller', '.listing-seller'
-        ];
-        
-        for (const selector of sellerSelectors) {
-          const sellerEl = element.querySelector(selector);
-          if (sellerEl) {
-            const seller = sellerEl.textContent?.trim();
-            if (seller && seller.length > 0) {
-              return seller;
-            }
-          }
-        }
-        return '';
-      },
-
-      extractType(element) {
-        const text = element.textContent?.toLowerCase() || '';
-        
-        if (text.includes('auction')) return 'Auction';
-        if (text.includes('buy now') || text.includes('buy it now')) return 'Buy Now';
-        if (text.includes('reserve')) return 'Reserve';
-        
-        return 'Listing';
-      },
-
-      processItems(items) {
-        console.log('Processing items:', items);
-        
-        const validItems = items.filter(item => 
-          item.title && 
-          item.title !== 'Unknown Item' && 
-          (item.price > 0 || item.priceText)
-        );
-        
-        console.log('Valid items:', validItems);
-        
-        // Sort by price (highest first), fallback to alphabetical for items without prices
-        validItems.sort((a, b) => {
-          if (a.price && b.price) return b.price - a.price;
-          if (a.price && !b.price) return -1;
-          if (!a.price && b.price) return 1;
-          return a.title.localeCompare(b.title);
+    } catch (injectionError) {
+      console.error('Injection error:', injectionError);
+      
+      try {
+        chrome.runtime.sendMessage({ 
+          action: 'error', 
+          error: `Script injection failed: ${injectionError.message}`,
+          details: { stack: injectionError.stack }
         });
-        
-        const itemsWithPrices = validItems.filter(item => item.price > 0);
-        const totalRevenue = itemsWithPrices.reduce((sum, item) => sum + item.price, 0);
-        const avgPrice = itemsWithPrices.length > 0 ? totalRevenue / itemsWithPrices.length : 0;
-        
-        // Group by price ranges
-        const priceRanges = this.groupByPriceRanges(itemsWithPrices);
-        
-        // Get type distribution
-        const typeDistribution = this.getTypeDistribution(validItems);
-        
-        const summary = {
-          totalItems: validItems.length,
-          itemsWithPrices: itemsWithPrices.length,
-          totalRevenue,
-          averagePrice: avgPrice,
-          priceRanges,
-          typeDistribution,
-          topItems: validItems.slice(0, 10)
-        };
-
-        console.log('Analysis summary:', summary);
-        
-        return {
-          items: validItems,
-          summary
-        };
-      },
-
-      groupByPriceRanges(items) {
-        const ranges = {
-          'Under $50': 0,
-          '$50 - $200': 0,
-          '$200 - $500': 0,
-          '$500 - $1,000': 0,
-          'Over $1,000': 0
-        };
-
-        items.forEach(item => {
-          if (item.price < 50) ranges['Under $50']++;
-          else if (item.price < 200) ranges['$50 - $200']++;
-          else if (item.price < 500) ranges['$200 - $500']++;
-          else if (item.price < 1000) ranges['$500 - $1,000']++;
-          else ranges['Over $1,000']++;
-        });
-
-        return ranges;
-      },
-
-      getTypeDistribution(items) {
-        const types = {};
-        items.forEach(item => {
-          types[item.type] = (types[item.type] || 0) + 1;
-        });
-        return types;
+      } catch (msgError) {
+        console.error('Could not send injection error:', msgError);
       }
-    };
-
-    // Start analysis
-    analyzer.analyze();
+    }
   }
 
   displayResults() {
@@ -537,7 +719,8 @@ class TradeMeAnalyzer {
       const itemEl = document.createElement('div');
       itemEl.className = 'top-item';
       
-      const displayPrice = item.price > 0 ? `$${item.price.toLocaleString()}` : item.priceText || 'Price on inquiry';
+      const displayPrice = item.price > 0 ? `$${item.price.toLocaleString()}` : 
+                          item.priceText || 'Price on inquiry';
       
       itemEl.innerHTML = `
         <div class="item-title" title="${item.title}">${item.title}</div>
@@ -562,22 +745,30 @@ class TradeMeAnalyzer {
     this.setStatus('active', 'Analysis complete - Ready for export');
   }
 
-  handleError(error) {
+  handleError(error, details) {
     this.isAnalyzing = false;
     document.getElementById('progress-section').style.display = 'none';
     document.getElementById('analyze-btn').disabled = false;
-    this.setStatus('inactive', `Error: ${error}`);
-    console.error('Analysis error details:', error);
     
-    // Show more helpful error message
-    let userFriendlyMessage = error;
-    if (error.includes('No items found')) {
-      userFriendlyMessage = 'No items found. Please navigate to a TradeMe search results or category page and try again.';
-    } else if (error.includes('Failed to analyze')) {
-      userFriendlyMessage = 'Analysis failed. Please make sure you\'re on TradeMe.co.nz and try refreshing the page.';
+    console.error('Analysis error details:', { error, details });
+    
+    // Provide helpful error messages
+    let userMessage = error;
+    
+    if (error.includes('No listing elements found')) {
+      userMessage = 'No items found on this page. Please navigate to a TradeMe search results or category page with listings.';
+    } else if (error.includes('Cannot inject scripts')) {
+      userMessage = 'Cannot access this page. Please navigate to a regular TradeMe page (not chrome:// or extension pages).';
+    } else if (error.includes('Extension communication failed')) {
+      userMessage = 'Extension communication error. Try refreshing the page and the extension.';
+    } else if (error.includes('timeout')) {
+      userMessage = 'Analysis timed out. The page may be loading slowly - please try again.';
     }
     
-    alert(`Analysis failed: ${userFriendlyMessage}`);
+    this.setStatus('inactive', `Error: ${userMessage}`);
+    
+    // Show detailed error to user
+    alert(`Analysis failed: ${userMessage}\n\nTip: Make sure you're on a TradeMe search results page with visible listings.`);
   }
 
   async exportToExcel() {
@@ -586,10 +777,8 @@ class TradeMeAnalyzer {
     try {
       const { items, summary } = this.analysisData;
       
-      // Prepare data for Excel
       const excelData = this.prepareExcelData(items, summary);
       
-      // Send to background script for Excel generation
       chrome.runtime.sendMessage({
         action: 'exportExcel',
         data: excelData
@@ -626,8 +815,7 @@ class TradeMeAnalyzer {
         'Location': item.location || 'N/A',
         'Seller': item.seller || 'N/A',
         'URL': item.link || 'N/A',
-        'Extracted At': item.extractedAt,
-        'Element Type': item.element || 'N/A'
+        'Extracted At': item.extractedAt
       })),
       priceRanges: Object.entries(summary.priceRanges).map(([range, count]) => ({
         'Price Range': range,
