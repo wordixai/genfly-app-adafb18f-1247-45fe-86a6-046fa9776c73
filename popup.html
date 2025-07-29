@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradeMe Sales Analyzer</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="icons/icon32.png" alt="TradeMe Analyzer" class="logo">
+      <h1>TradeMe Sales Analyzer</h1>
+    </div>
+    
+    <div class="main-content">
+      <div class="status-section">
+        <div id="status" class="status-inactive">
+          <span class="status-dot"></span>
+          <span class="status-text">Not on TradeMe</span>
+        </div>
+      </div>
+
+      <div class="action-section">
+        <div class="input-group">
+          <label for="category-select">Select Category:</label>
+          <select id="category-select">
+            <option value="all">All Categories</option>
+            <option value="motors">Motors</option>
+            <option value="property">Property</option>
+            <option value="jobs">Jobs</option>
+            <option value="marketplace">Marketplace</option>
+            <option value="services">Services</option>
+          </select>
+        </div>
+
+        <div class="input-group">
+          <label for="max-items">Maximum Items:</label>
+          <input type="number" id="max-items" value="50" min="1" max="500">
+        </div>
+
+        <div class="button-group">
+          <button id="analyze-btn" class="btn-primary" disabled>
+            <span class="btn-icon">📊</span>
+            Analyze Sales Data
+          </button>
+          
+          <button id="export-btn" class="btn-secondary" disabled>
+            <span class="btn-icon">📥</span>
+            Export to Excel
+          </button>
+        </div>
+      </div>
+
+      <div class="progress-section" id="progress-section" style="display: none;">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="progress-text" id="progress-text">Analyzing...</div>
+      </div>
+
+      <div class="results-section" id="results-section" style="display: none;">
+        <h3>Analysis Results</h3>
+        <div class="stats">
+          <div class="stat-item">
+            <span class="stat-label">Items Found:</span>
+            <span class="stat-value" id="items-count">0</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Total Revenue:</span>
+            <span class="stat-value" id="total-revenue">$0</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Avg Price:</span>
+            <span class="stat-value" id="avg-price">$0</span>
+          </div>
+        </div>
+        
+        <div class="top-items">
+          <h4>Top Selling Items</h4>
+          <div id="top-items-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>TradeMe Sales Analyzer v1.0.0</p>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

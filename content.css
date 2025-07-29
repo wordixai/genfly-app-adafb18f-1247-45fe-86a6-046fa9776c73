@@ -1,0 +1,57 @@
+/* Styles for TradeMe Analyzer content script */
+
+#trademe-analyzer-indicator {
+  /* Styles are inline for better compatibility */
+}
+
+/* Loading overlay for analysis */
+.trademe-analyzer-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+  backdrop-filter: blur(2px);
+}
+
+.trademe-analyzer-loader {
+  background: white;
+  padding: 30px;
+  border-radius: 12px;
+  text-align: center;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  max-width: 300px;
+}
+
+.trademe-analyzer-loader h3 {
+  margin: 0 0 15px 0;
+  color: #333;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.trademe-analyzer-loader .spinner {
+  width: 40px;
+  height: 40px;
+  margin: 10px auto;
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #2D5BFF;
+  border-radius: 50%;
+  animation: trademe-spin 1s linear infinite;
+}
+
+@keyframes trademe-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.trademe-analyzer-loader p {
+  margin: 10px 0 0 0;
+  color: #666;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
